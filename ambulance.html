@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Ambulance Tracker (Rider)</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body>
+  <h2>Ambulance Tracker (Pushing Location to Firebase)</h2>
+
+  <!-- Firebase SDK -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-app.js";
+    import { getDatabase, ref, set } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-database.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyCBjUKOnq3mR8wVlqVGWRHnjXkf_nUY1mY",
+      authDomain: "sad1-c59a3.firebaseapp.com",
+      databaseURL: "https://sad1-c59a3-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "sad1-c59a3",
+      storageBucket: "sad1-c59a3.appspot.com",
+      messagingSenderId: "849606613190",
+      appId: "1:849606613190:web:8fc8653c21e26d85f71fc7",
+      measurementId: "G-KRGQDYG8X3"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    // Watch GPS and push to Firebase
+    navigator.geolocation.watchPosition(
+      (pos) => {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        const heading = pos.coords.heading || 0;
+
+        set(ref(db, "ambulance/location"), {
+          latitude: lat,
+          longitude: lng,
+          heading: heading,
+          timestamp: Date.now()
+        });
+
+        console.log("Location updated:", lat, lng);
+      },
+      (err) => alert("Location error: " + err.message),
+      { enableHighAccuracy: true, maximumAge: 500 }
+    );
+  </script>
+</body>
+</html>

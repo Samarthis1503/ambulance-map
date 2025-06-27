@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Live Ambulance Viewer</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css" />
+  <style>
+    #map { height: 100vh; width: 100%; }
+    .info-box {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 999;
+      background: white;
+      padding: 10px 15px;
+      border-radius: 8px;
+      font-family: sans-serif;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+    }
+    .rotating-icon {
+      width: 50px;
+      height: 50px;
+      transform-origin: center;
+      transition: transform 0.2s linear;
+    }
+    .leaflet-marker-icon.custom-svg-icon {
+      background: none !important;
+      border: none !important;
+    }
+  </style>
+</head>
+<body>
+
+<div class="info-box">
+  <div><strong>Distance:</strong> <span id="distance">--</span></div>
+  <div><strong>ETA:</strong> <span id="eta">--</span></div>
+</div>
+
+<div id="map"></div>
+
+<script src="https://www.gstatic.com/firebasejs/11.9.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/11.9.1/firebase-database-compat.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.min.js"></script>
+
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSyCBjUKOnq3mR8wVlqVGWRHnjXkf_nUY1mY",
+    authDomain: "sad1-c59a3.firebaseapp.com",
+    databaseURL: "https://sad1-c59a3-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "sad1-c59a3",
+    storageBucket: "sad1-c59a3.appspot.com",
+    messagingSenderId: "849606613190",
+    appId: "1:849606613190:web:8fc8653c21e26d85f71fc7",
+    measurementId: "G-KRGQDYG8X3"
+  };
+
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
+
+  const map = L.map('map').setView([0, 0], 15);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+
+  const destination = L.latLng(21.1742, 72.8319);
+  L.marker(destination).addTo(map).bindPopup("Destination");
+
+  const svgHTML = `
+    <svg class="rotating-icon" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+      <g>
+        <rect x="10" y="20" width="44" height="24" rx="6" ry="6" fill="#e60000"/>
+        <polygon points="32,10 28,20 36,20" fill="#fff" />
+        <circle cx="20" cy="50" r="5" fill="#222"/>
+        <circle cx="44" cy="50" r="5" fill="#222"/>
+      </g>
+    </svg>
+  `;
+
+  const icon = L.divIcon({
+    className: 'custom-svg-icon',
+    html: svgHTML,
+    iconSize: [50, 50],
+    iconAnchor: [25, 25]
+  });
+
+  let ambulanceMarker;
+  let routeControl;
+
+  function updateRoute(from) {
+    if (routeControl) map.removeControl(routeControl);
+
+    routeControl = L.Routing.control({
+      waypoints: [from, destination],
+      addWaypoints: false,
+      draggableWaypoints: false,
+      routeWhileDragging: false,
+      showAlternatives: false,
+      createMarker: () => null
+    }).on('routesfound', function(e) {
+      const r = e.routes[0];
+      document.getElementById("distance").textContent = (r.summary.totalDistance / 1000).toFixed(2) + " km";
+      document.getElementById("eta").textContent = Math.round(r.summary.totalTime / 60) + " min";
+    }).addTo(map);
+  }
+
+  firebase.database().ref("ambulance/location").on("value", (snapshot) => {
+    const data = snapshot.val();
+    if (!data) return;
+
+    const latlng = L.latLng(data.latitude, data.longitude);
+    const heading = data.heading || 0;
+
+    if (!ambulanceMarker) {
+      ambulanceMarker = L.marker(latlng, { icon }).addTo(map).bindPopup("Ambulance");
+      map.setView(latlng, 16);
+    } else {
+      ambulanceMarker.setLatLng(latlng);
+    }
+
+    const svg = document.querySelector('.rotating-icon');
+    if (svg) svg.style.transform = `rotate(${heading}deg)`;
+
+    updateRoute(latlng);
+  });
+</script>
+
+</body>
+</html>
