@@ -19,6 +19,15 @@
       font-family: sans-serif;
       box-shadow: 0 2px 6px rgba(0,0,0,0.2);
     }
+    #startTripBtn {
+      margin-top: 5px;
+      padding: 6px 12px;
+      background-color: #28a745;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
     .rotating-icon {
       width: 50px;
       height: 50px;
@@ -35,7 +44,8 @@
 
 <div class="info-box">
   <div><strong>Distance:</strong> <span id="distance">--</span></div>
-  <div><strong>ETA:</strong> <span id="eta">--</span></div>
+  <div><strong>ETA (ML):</strong> <span id="eta">--</span></div>
+  <button id="startTripBtn">Start Trip</button>
 </div>
 
 <div id="map"></div>
@@ -86,9 +96,47 @@
 
   let ambulanceMarker;
   let routeControl;
+  let fullRouteLine = null;
+  let progressLine = null;
+  let coveredCoords = [];
+  let lastLatLng = null;
+  let tripStarted = false;
+
+  document.getElementById("startTripBtn").addEventListener("click", () => {
+    tripStarted = true;
+    alert("Trip Started!");
+  });
+
+  // --- AI/ML-Based ETA Calculation ---
+  let lastTimestamp = null;
+  let lastPosition = null;
+  let speedHistory = [];
+
+  function haversine(lat1, lon1, lat2, lon2) {
+    const toRad = angle => angle * Math.PI / 180;
+    const R = 6371; // km
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a = Math.sin(dLat / 2) ** 2 +
+              Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+              Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  function estimateETAviaML(distance_km) {
+    if (speedHistory.length < 2) return "--";
+    const avgSpeed = speedHistory.reduce((a, b) => a + b, 0) / speedHistory.length;
+    if (avgSpeed === 0) return "--";
+    return Math.round((distance_km / avgSpeed) * 60);
+  }
 
   function updateRoute(from) {
-    if (routeControl) map.removeControl(routeControl);
+    if (!tripStarted) return;
+
+    if (routeControl) {
+      map.removeControl(routeControl);
+      routeControl = null;
+    }
 
     routeControl = L.Routing.control({
       waypoints: [from, destination],
@@ -97,10 +145,24 @@
       routeWhileDragging: false,
       showAlternatives: false,
       createMarker: () => null
-    }).on('routesfound', function(e) {
+    }).on('routesfound', function (e) {
       const r = e.routes[0];
-      document.getElementById("distance").textContent = (r.summary.totalDistance / 1000).toFixed(2) + " km";
-      document.getElementById("eta").textContent = Math.round(r.summary.totalTime / 60) + " min";
+      const fullCoords = r.coordinates;
+      const distKm = r.summary.totalDistance / 1000;
+
+      // Predict ETA using AI logic
+      const etaByML = estimateETAviaML(distKm);
+
+      document.getElementById("distance").textContent = distKm.toFixed(2) + " km";
+      document.getElementById("eta").textContent = etaByML + " min";
+
+      // Draw full path
+      if (fullRouteLine) map.removeLayer(fullRouteLine);
+      fullRouteLine = L.polyline(fullCoords, { color: '#ccc', weight: 6 }).addTo(map);
+
+      coveredCoords = [];
+      if (progressLine) map.removeLayer(progressLine);
+      progressLine = L.polyline([], { color: 'blue', weight: 5 }).addTo(map);
     }).addTo(map);
   }
 
@@ -121,7 +183,28 @@
     const svg = document.querySelector('.rotating-icon');
     if (svg) svg.style.transform = `rotate(${heading}deg)`;
 
-    updateRoute(latlng);
+    // AI-based speed tracking
+    const now = Date.now();
+    if (lastPosition && lastTimestamp) {
+      const timeDiff = (now - lastTimestamp) / 1000;
+      const dist = haversine(lastPosition.lat, lastPosition.lng, latlng.lat, latlng.lng);
+      const speed = dist / (timeDiff / 3600); // km/h
+      if (speed > 2 && speed < 120) {
+        speedHistory.push(speed);
+        if (speedHistory.length > 10) speedHistory.shift();
+      }
+    }
+    lastTimestamp = now;
+    lastPosition = latlng;
+
+    if (tripStarted) {
+      if (!lastLatLng || lastLatLng.distanceTo(latlng) > 5) {
+        coveredCoords.push(latlng);
+        progressLine.setLatLngs(coveredCoords);
+        updateRoute(latlng);
+        lastLatLng = latlng;
+      }
+    }
   });
 </script>
 
