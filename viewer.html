@@ -28,15 +28,17 @@
       border-radius: 4px;
       cursor: pointer;
     }
-    .rotating-icon {
-      width: 50px;
-      height: 50px;
-      transform-origin: center;
-      transition: transform 0.2s linear;
+    .leaflet-routing-container {
+      display: none;
     }
-    .leaflet-marker-icon.custom-svg-icon {
-      background: none !important;
-      border: none !important;
+    .route-label {
+      background: rgba(0,0,0,0.8);
+      color: white;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-family: sans-serif;
+      pointer-events: none;
     }
   </style>
 </head>
@@ -70,7 +72,7 @@
   firebase.initializeApp(firebaseConfig);
   const db = firebase.database();
 
-  const map = L.map('map').setView([0, 0], 15);
+  const map = L.map('map').setView([21.174, 72.831], 16);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
 
   const destination = L.latLng(21.1742, 72.8319);
@@ -78,11 +80,17 @@
 
   const svgHTML = `
     <svg class="rotating-icon" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
-      <g>
-        <rect x="10" y="20" width="44" height="24" rx="6" ry="6" fill="#e60000"/>
-        <polygon points="32,10 28,20 36,20" fill="#fff" />
-        <circle cx="20" cy="50" r="5" fill="#222"/>
-        <circle cx="44" cy="50" r="5" fill="#222"/>
+      <g transform="translate(0, 0)">
+        <rect x="5" y="20" width="54" height="20" rx="3" ry="3" fill="#d32f2f" />
+        <rect x="9" y="16" width="20" height="10" rx="2" ry="2" fill="#ffffff" />
+        <rect x="11" y="18" width="16" height="6" fill="#1976d2" />
+        <polygon points="45,20 60,20 60,30 45,30" fill="#fff" />
+        <rect x="47" y="22" width="4" height="6" fill="#1976d2" />
+        <rect x="53" y="22" width="4" height="6" fill="#1976d2" />
+        <circle cx="15" cy="44" r="4" fill="#222" />
+        <circle cx="49" cy="44" r="4" fill="#222" />
+        <rect x="28" y="22" width="2" height="6" fill="#fff"/>
+        <rect x="26" y="24" width="6" height="2" fill="#fff"/>
       </g>
     </svg>
   `;
@@ -94,12 +102,8 @@
     iconAnchor: [25, 25]
   });
 
-  let ambulanceMarker;
-  let routeControl;
-  let fullRouteLine = null;
-  let progressLine = null;
-  let coveredCoords = [];
-  let lastLatLng = null;
+  let ambulanceMarker, routeControl, fullRouteLine = null;
+  let progressLine = null, coveredCoords = [], lastLatLng = null;
   let tripStarted = false;
 
   document.getElementById("startTripBtn").addEventListener("click", () => {
@@ -107,19 +111,14 @@
     alert("Trip Started!");
   });
 
-  // --- AI/ML-Based ETA Calculation ---
-  let lastTimestamp = null;
-  let lastPosition = null;
-  let speedHistory = [];
+  let lastTimestamp = null, lastPosition = null, speedHistory = [];
 
   function haversine(lat1, lon1, lat2, lon2) {
-    const toRad = angle => angle * Math.PI / 180;
-    const R = 6371; // km
+    const toRad = deg => deg * Math.PI / 180;
+    const R = 6371;
     const dLat = toRad(lat2 - lat1);
     const dLon = toRad(lon2 - lon1);
-    const a = Math.sin(dLat / 2) ** 2 +
-              Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-              Math.sin(dLon / 2) ** 2;
+    const a = Math.sin(dLat/2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2) ** 2;
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
@@ -144,25 +143,35 @@
       draggableWaypoints: false,
       routeWhileDragging: false,
       showAlternatives: false,
-      createMarker: () => null
+      createMarker: () => null,
+      lineOptions: {
+        styles: [{ color: '#2196f3', weight: 6 }]
+      }
     }).on('routesfound', function (e) {
       const r = e.routes[0];
-      const fullCoords = r.coordinates;
+      const coords = r.coordinates;
       const distKm = r.summary.totalDistance / 1000;
-
-      // Predict ETA using AI logic
-      const etaByML = estimateETAviaML(distKm);
+      const eta = estimateETAviaML(distKm);
 
       document.getElementById("distance").textContent = distKm.toFixed(2) + " km";
-      document.getElementById("eta").textContent = etaByML + " min";
+      document.getElementById("eta").textContent = eta + " min";
 
-      // Draw full path
       if (fullRouteLine) map.removeLayer(fullRouteLine);
-      fullRouteLine = L.polyline(fullCoords, { color: '#ccc', weight: 6 }).addTo(map);
+      fullRouteLine = L.polyline(coords, { color: "#2196f3", weight: 6 }).addTo(map);
 
-      coveredCoords = [];
+      // --- Add floating ETA label on midpoint ---
+      const midIdx = Math.floor(coords.length / 2);
+      const midLatLng = coords[midIdx];
+      L.marker(midLatLng, {
+        icon: L.divIcon({
+          className: 'route-label',
+          html: `<b>${eta} min • ${distKm.toFixed(1)} km</b>`
+        })
+      }).addTo(map);
+
       if (progressLine) map.removeLayer(progressLine);
-      progressLine = L.polyline([], { color: 'blue', weight: 5 }).addTo(map);
+      progressLine = L.polyline([], { color: 'blue', weight: 4 }).addTo(map);
+      coveredCoords = [];
     }).addTo(map);
   }
 
@@ -183,12 +192,11 @@
     const svg = document.querySelector('.rotating-icon');
     if (svg) svg.style.transform = `rotate(${heading}deg)`;
 
-    // AI-based speed tracking
     const now = Date.now();
     if (lastPosition && lastTimestamp) {
       const timeDiff = (now - lastTimestamp) / 1000;
       const dist = haversine(lastPosition.lat, lastPosition.lng, latlng.lat, latlng.lng);
-      const speed = dist / (timeDiff / 3600); // km/h
+      const speed = dist / (timeDiff / 3600);
       if (speed > 2 && speed < 120) {
         speedHistory.push(speed);
         if (speedHistory.length > 10) speedHistory.shift();
