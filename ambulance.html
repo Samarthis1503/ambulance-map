@@ -15,17 +15,46 @@
       transform: rotate(0deg);
       transition: transform 0.2s linear;
     }
+    .info-box {
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+      padding: 10px 15px;
+      font-family: sans-serif;
+      margin-bottom: 10px;
+      display: inline-block;
+    }
+    .btn {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 5px;
+      background: #1976d2;
+      color: #fff;
+      font-size: 16px;
+      margin-right: 8px;
+      cursor: pointer;
+    }
+    .btn:disabled {
+      background: #aaa;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
   <h2>Ambulance Tracker (Pushing Location to Firebase)</h2>
+  <div class="info-box" id="tripInfo" style="display:none;">
+    <div><b>ETA:</b> <span id="eta">--</span></div>
+    <div><b>Total Distance:</b> <span id="totalDistance">--</span></div>
+    <div><b>Distance Left:</b> <span id="distanceLeft">--</span></div>
+  </div>
+  <button class="btn" id="setDestBtn">Set Destination</button>
+  <button class="btn" id="startTripBtn" disabled>Start Trip</button>
+  <button class="btn" id="stopTripBtn" style="display:none;">Stop Trip</button>
   <div id="map"></div>
-  <button id="startTripBtn" disabled>Start Trip</button>
-  <button id="stopTripBtn" style="display:none;">Stop Trip</button>
 
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-app.js";
-    import { getDatabase, ref, set, onValue, remove } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-database.js";
+    import { getDatabase, ref, set, onValue, remove, update } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyCBjUKOnq3mR8wVlqVGWRHnjXkf_nUY1mY",
@@ -41,25 +70,72 @@
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
 
-    let map, routeControl, fullRoute, coveredLine, uncoveredLine, ambulanceMarker;
+    let map, routeControl, fullRoute, coveredLine, uncoveredLine, ambulanceMarker, destMarker;
     let routeCoords = [], coveredCoords = [];
     let tripStarted = false;
-    let destination = null;
+    let source = null, destination = null;
     let watchId = null;
     let lastLatLng = null;
     let lastHeading = 0;
+    let speedHistory = [];
+    let totalDistance = 0;
 
-    function enableStartBtn() {
-      document.getElementById('startTripBtn').disabled = false;
+    // UI Elements
+    const setDestBtn = document.getElementById('setDestBtn');
+    const startTripBtn = document.getElementById('startTripBtn');
+    const stopTripBtn = document.getElementById('stopTripBtn');
+    const tripInfo = document.getElementById('tripInfo');
+    const etaSpan = document.getElementById('eta');
+    const totalDistanceSpan = document.getElementById('totalDistance');
+    const distanceLeftSpan = document.getElementById('distanceLeft');
+
+    function enableStartBtn() { startTripBtn.disabled = false; }
+    function disableStartBtn() { startTripBtn.disabled = true; }
+    function showStopBtn() { stopTripBtn.style.display = ''; }
+    function hideStopBtn() { stopTripBtn.style.display = 'none'; }
+    function showTripInfo() { tripInfo.style.display = ''; }
+    function hideTripInfo() { tripInfo.style.display = 'none'; }
+
+    function getDirectionIcon(bearing) {
+      return L.divIcon({
+        className: '',
+        html: `<svg class="direction-arrow" style="transform: rotate(${bearing}deg);" viewBox="0 0 40 40">
+          <polygon points="20,4 36,36 20,30 4,36" fill="#1976d2" stroke="#222" stroke-width="2"/>
+        </svg>`,
+        iconSize: [40, 40],
+        iconAnchor: [20, 20]
+      });
     }
-    function disableStartBtn() {
-      document.getElementById('startTripBtn').disabled = true;
+
+    function computeBearing(from, to) {
+      // Returns bearing in degrees from 'from' to 'to'
+      const lat1 = from.lat * Math.PI / 180;
+      const lat2 = to.lat * Math.PI / 180;
+      const dLon = (to.lng - from.lng) * Math.PI / 180;
+      const y = Math.sin(dLon) * Math.cos(lat2);
+      const x = Math.cos(lat1)*Math.sin(lat2) -
+                Math.sin(lat1)*Math.cos(lat2)*Math.cos(dLon);
+      let brng = Math.atan2(y, x) * 180 / Math.PI;
+      return (brng + 360) % 360;
     }
-    function showStopBtn() {
-      document.getElementById('stopTripBtn').style.display = '';
-    }
-    function hideStopBtn() {
-      document.getElementById('stopTripBtn').style.display = 'none';
+
+    function updateAmbulanceMarker(latlng) {
+      // Find next point on route for bearing
+      let bearing = lastHeading;
+      if (routeCoords.length > 1) {
+        let minDist = Infinity, nextIdx = 1;
+        for (let i = 1; i < routeCoords.length; i++) {
+          let d = latlng.distanceTo(routeCoords[i]);
+          if (d < minDist) { minDist = d; nextIdx = i; }
+        }
+        bearing = computeBearing(latlng, routeCoords[nextIdx]);
+      }
+      if (!ambulanceMarker) {
+        ambulanceMarker = L.marker(latlng, { icon: getDirectionIcon(bearing) }).addTo(map).bindPopup('Ambulance');
+      } else {
+        ambulanceMarker.setLatLng(latlng);
+        ambulanceMarker.setIcon(getDirectionIcon(bearing));
+      }
     }
 
     function drawRouteLines() {
@@ -81,42 +157,93 @@
     function saveCoveredPathToFirebase() {
       set(ref(db, 'ambulance/coveredPath'), coveredCoords.map(pt => ({lat: pt.lat, lng: pt.lng})));
     }
+    function saveTripStatsToFirebase(eta, totalDist, leftDist) {
+      update(ref(db, 'ambulance'), {
+        eta: eta,
+        totalDistance: totalDist,
+        distanceLeft: leftDist
+      });
+    }
 
     function startTrip() {
       tripStarted = true;
       set(ref(db, 'ambulance/tripStarted'), true);
       showStopBtn();
-      disableStartBtn();
+      hideStartBtn();
+      showTripInfo();
+      // Start watching position
+      if (!watchId) {
+        watchId = navigator.geolocation.watchPosition(
+          onPositionUpdate,
+          (err) => alert('Location error: ' + err.message),
+          { enableHighAccuracy: true, maximumAge: 500 }
+        );
+      }
     }
     function stopTrip() {
       tripStarted = false;
       set(ref(db, 'ambulance/tripStarted'), false);
       remove(ref(db, 'ambulance/coveredPath'));
+      remove(ref(db, 'ambulance/location'));
+      update(ref(db, 'ambulance'), { eta: null, totalDistance: null, distanceLeft: null });
       coveredCoords = [];
       drawRouteLines();
       hideStopBtn();
-      enableStartBtn();
-    }
-
-    function getDirectionIcon(heading) {
-      // SVG arrow, rotated by heading
-      return L.divIcon({
-        className: '',
-        html: `<svg class="direction-arrow" style="transform: rotate(${heading}deg);" viewBox="0 0 40 40">
-          <polygon points="20,4 36,36 20,30 4,36" fill="#1976d2" stroke="#222" stroke-width="2"/>
-        </svg>`,
-        iconSize: [40, 40],
-        iconAnchor: [20, 20]
-      });
-    }
-
-    function updateAmbulanceMarker(latlng, heading) {
-      if (!ambulanceMarker) {
-        ambulanceMarker = L.marker(latlng, { icon: getDirectionIcon(heading) }).addTo(map).bindPopup('Ambulance');
-      } else {
-        ambulanceMarker.setLatLng(latlng);
-        ambulanceMarker.setIcon(getDirectionIcon(heading));
+      showStartBtn();
+      hideTripInfo();
+      if (watchId) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
       }
+    }
+    function showStartBtn() { startTripBtn.style.display = ''; }
+    function hideStartBtn() { startTripBtn.style.display = 'none'; }
+
+    function haversine(lat1, lon1, lat2, lon2) {
+      const toRad = deg => deg * Math.PI / 180;
+      const R = 6371;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat/2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    function getRouteDistance(coords) {
+      let dist = 0;
+      for (let i = 1; i < coords.length; i++) {
+        dist += coords[i-1].distanceTo(coords[i]);
+      }
+      return dist; // in meters
+    }
+
+    function getDistanceLeft(current, route) {
+      // Find closest point on route, sum remaining
+      let minDist = Infinity, idx = 0;
+      for (let i = 0; i < route.length; i++) {
+        let d = current.distanceTo(route[i]);
+        if (d < minDist) { minDist = d; idx = i; }
+      }
+      let dist = current.distanceTo(route[idx]);
+      for (let i = idx; i < route.length-1; i++) {
+        dist += route[i].distanceTo(route[i+1]);
+      }
+      return dist;
+    }
+
+    function estimateETA(distanceLeft) {
+      // Use average speed in m/s, fallback to 1.5 m/s (walking)
+      let avgSpeed = 0;
+      if (speedHistory.length > 2) {
+        avgSpeed = speedHistory.reduce((a, b) => a + b, 0) / speedHistory.length;
+      }
+      if (avgSpeed < 0.5) avgSpeed = 1.5;
+      return Math.round(distanceLeft / avgSpeed / 60); // in minutes
+    }
+
+    function updateTripStatsUI(eta, totalDist, leftDist) {
+      etaSpan.textContent = eta + " min";
+      totalDistanceSpan.textContent = (totalDist/1000).toFixed(2) + " km";
+      distanceLeftSpan.textContent = (leftDist/1000).toFixed(2) + " km";
     }
 
     function onPositionUpdate(pos) {
@@ -125,31 +252,51 @@
       const heading = pos.coords.heading != null ? pos.coords.heading : lastHeading;
       lastHeading = heading;
       const latlng = L.latLng(lat, lng);
+
+      // Speed calculation
+      if (lastLatLng && pos.timestamp && lastLatLng.timestamp) {
+        const dt = (pos.timestamp - lastLatLng.timestamp) / 1000;
+        const dist = lastLatLng.latlng.distanceTo(latlng);
+        const speed = dist / dt;
+        if (speed > 0.5 && speed < 30) { // 0.5 m/s to 30 m/s
+          speedHistory.push(speed);
+          if (speedHistory.length > 10) speedHistory.shift();
+        }
+      }
+      lastLatLng = {latlng, timestamp: pos.timestamp};
+
       set(ref(db, 'ambulance/location'), {
         latitude: lat,
         longitude: lng,
         heading: heading,
         timestamp: Date.now()
       });
-      updateAmbulanceMarker(latlng, heading);
+      updateAmbulanceMarker(latlng);
+
       if (tripStarted) {
-        if (!lastLatLng || latlng.distanceTo(lastLatLng) > 2) {
+        if (coveredCoords.length === 0 || latlng.distanceTo(coveredCoords[coveredCoords.length-1]) > 2) {
           coveredCoords.push(latlng);
           saveCoveredPathToFirebase();
           drawRouteLines();
-          lastLatLng = latlng;
         }
+        // Update trip stats
+        const leftDist = getDistanceLeft(latlng, routeCoords);
+        const eta = estimateETA(leftDist);
+        updateTripStatsUI(eta, totalDistance, leftDist);
+        saveTripStatsToFirebase(eta, totalDistance, leftDist);
       }
     }
 
-    function setupMapAndRoute(startLatLng) {
-      map = L.map('map').setView(startLatLng, 20);
+    function setupMapAndRoute(sourceLatLng, destLatLng) {
+      if (map) map.remove();
+      map = L.map('map').setView(sourceLatLng, 20);
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
-      // Destination ~15m east
-      destination = L.latLng(startLatLng.lat, startLatLng.lng + 0.00015);
-      L.marker(destination).addTo(map).bindPopup('Destination');
+
+      if (destMarker) map.removeLayer(destMarker);
+      destMarker = L.marker(destLatLng).addTo(map).bindPopup('Destination');
+
       routeControl = L.Routing.control({
-        waypoints: [startLatLng, destination],
+        waypoints: [sourceLatLng, destLatLng],
         addWaypoints: false,
         draggableWaypoints: false,
         routeWhileDragging: false,
@@ -157,43 +304,62 @@
         createMarker: () => null,
         lineOptions: { styles: [{ color: '#2196f3', weight: 6 }] }
       }).on('routesfound', function(e) {
-        routeCoords = e.routes[0].coordinates;
+        routeCoords = e.routes[0].coordinates.map(c => L.latLng(c.lat, c.lng));
+        totalDistance = getRouteDistance(routeCoords);
         drawRouteLines();
         saveRouteToFirebase();
         enableStartBtn();
+        showTripInfo();
+        updateTripStatsUI("--", totalDistance, totalDistance);
+        saveTripStatsToFirebase("--", totalDistance, totalDistance);
       }).addTo(map);
+
+      // Show ambulance marker at source
+      updateAmbulanceMarker(sourceLatLng);
     }
 
-    document.getElementById('startTripBtn').addEventListener('click', () => {
+    setDestBtn.addEventListener('click', () => {
+      setDestBtn.disabled = true;
+      alert("Click on the map to set the destination point.");
+      if (map) map.remove();
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          source = L.latLng(pos.coords.latitude, pos.coords.longitude);
+          map = L.map('map').setView(source, 20);
+          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+          updateAmbulanceMarker(source);
+          map.on('click', function(e) {
+            destination = e.latlng;
+            setupMapAndRoute(source, destination);
+            setDestBtn.style.display = 'none';
+            map.off('click');
+          });
+        },
+        (err) => alert('Location error: ' + err.message),
+        { enableHighAccuracy: true }
+      );
+    });
+
+    startTripBtn.addEventListener('click', () => {
       startTrip();
     });
-    document.getElementById('stopTripBtn').addEventListener('click', () => {
+    stopTripBtn.addEventListener('click', () => {
       stopTrip();
     });
 
-    // On load: get current location, setup map and route
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const lat = pos.coords.latitude;
-        const lng = pos.coords.longitude;
-        setupMapAndRoute(L.latLng(lat, lng));
-        // Start watching position
-        watchId = navigator.geolocation.watchPosition(
-          onPositionUpdate,
-          (err) => alert('Location error: ' + err.message),
-          { enableHighAccuracy: true, maximumAge: 500 }
-        );
-      },
-      (err) => alert('Location error: ' + err.message),
-      { enableHighAccuracy: true }
-    );
+    // On load: clear trip state
+    set(ref(db, 'ambulance/tripStarted'), false);
+    remove(ref(db, 'ambulance/coveredPath'));
+    remove(ref(db, 'ambulance/location'));
+    update(ref(db, 'ambulance'), { eta: null, totalDistance: null, distanceLeft: null });
 
     // Listen for trip stop from other clients (sync UI)
     onValue(ref(db, 'ambulance/tripStarted'), (snap) => {
       if (!snap.val()) {
         tripStarted = false;
         hideStopBtn();
-        enableStartBtn();
+        showStartBtn();
+        hideTripInfo();
       }
     });
   </script>
