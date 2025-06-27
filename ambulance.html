@@ -9,14 +9,11 @@
   <style>
     #map { height: 60vh; width: 100%; margin-bottom: 10px; }
     .leaflet-routing-container { display: none; }
-    .route-label {
-      background: rgba(0,0,0,0.8);
-      color: white;
-      padding: 4px 8px;
-      border-radius: 4px;
-      font-size: 12px;
-      font-family: sans-serif;
-      pointer-events: none;
+    .direction-arrow {
+      width: 40px;
+      height: 40px;
+      transform: rotate(0deg);
+      transition: transform 0.2s linear;
     }
   </style>
 </head>
@@ -28,7 +25,7 @@
 
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-app.js";
-    import { getDatabase, ref, set, onValue, update, remove } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-database.js";
+    import { getDatabase, ref, set, onValue, remove } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyCBjUKOnq3mR8wVlqVGWRHnjXkf_nUY1mY",
@@ -50,6 +47,7 @@
     let destination = null;
     let watchId = null;
     let lastLatLng = null;
+    let lastHeading = 0;
 
     function enableStartBtn() {
       document.getElementById('startTripBtn').disabled = false;
@@ -67,26 +65,13 @@
     function drawRouteLines() {
       if (uncoveredLine) { map.removeLayer(uncoveredLine); uncoveredLine = null; }
       if (coveredLine) { map.removeLayer(coveredLine); coveredLine = null; }
-      if (coveredCoords.length > 1) {
-        coveredLine = L.polyline(coveredCoords, { color: 'gray', weight: 6 }).addTo(map);
-      }
+      // Always show full route (blue)
       if (routeCoords.length > 1) {
-        // Uncovered = routeCoords from last covered to end
-        let lastCoveredIdx = 0;
-        if (coveredCoords.length > 0) {
-          // Find the closest point in routeCoords to last covered
-          let last = coveredCoords[coveredCoords.length-1];
-          let minDist = Infinity, minIdx = 0;
-          routeCoords.forEach((pt, idx) => {
-            let d = Math.abs(pt.lat - last.lat) + Math.abs(pt.lng - last.lng);
-            if (d < minDist) { minDist = d; minIdx = idx; }
-          });
-          lastCoveredIdx = minIdx;
-        }
-        let remaining = routeCoords.slice(lastCoveredIdx);
-        if (remaining.length > 1) {
-          uncoveredLine = L.polyline(remaining, { color: '#2196f3', weight: 6 }).addTo(map);
-        }
+        uncoveredLine = L.polyline(routeCoords, { color: '#2196f3', weight: 6 }).addTo(map);
+      }
+      // Show covered path (gray) overlay
+      if (coveredCoords.length > 1) {
+        coveredLine = L.polyline(coveredCoords, { color: 'gray', weight: 8 }).addTo(map);
       }
     }
 
@@ -113,10 +98,32 @@
       enableStartBtn();
     }
 
+    function getDirectionIcon(heading) {
+      // SVG arrow, rotated by heading
+      return L.divIcon({
+        className: '',
+        html: `<svg class="direction-arrow" style="transform: rotate(${heading}deg);" viewBox="0 0 40 40">
+          <polygon points="20,4 36,36 20,30 4,36" fill="#1976d2" stroke="#222" stroke-width="2"/>
+        </svg>`,
+        iconSize: [40, 40],
+        iconAnchor: [20, 20]
+      });
+    }
+
+    function updateAmbulanceMarker(latlng, heading) {
+      if (!ambulanceMarker) {
+        ambulanceMarker = L.marker(latlng, { icon: getDirectionIcon(heading) }).addTo(map).bindPopup('Ambulance');
+      } else {
+        ambulanceMarker.setLatLng(latlng);
+        ambulanceMarker.setIcon(getDirectionIcon(heading));
+      }
+    }
+
     function onPositionUpdate(pos) {
       const lat = pos.coords.latitude;
       const lng = pos.coords.longitude;
-      const heading = pos.coords.heading || 0;
+      const heading = pos.coords.heading != null ? pos.coords.heading : lastHeading;
+      lastHeading = heading;
       const latlng = L.latLng(lat, lng);
       set(ref(db, 'ambulance/location'), {
         latitude: lat,
@@ -124,13 +131,9 @@
         heading: heading,
         timestamp: Date.now()
       });
-      if (!ambulanceMarker) {
-        ambulanceMarker = L.marker(latlng).addTo(map).bindPopup('Ambulance');
-      } else {
-        ambulanceMarker.setLatLng(latlng);
-      }
+      updateAmbulanceMarker(latlng, heading);
       if (tripStarted) {
-        if (!lastLatLng || latlng.distanceTo(lastLatLng) > 5) {
+        if (!lastLatLng || latlng.distanceTo(lastLatLng) > 2) {
           coveredCoords.push(latlng);
           saveCoveredPathToFirebase();
           drawRouteLines();
@@ -140,10 +143,10 @@
     }
 
     function setupMapAndRoute(startLatLng) {
-      map = L.map('map').setView(startLatLng, 18);
+      map = L.map('map').setView(startLatLng, 20);
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
-      // Destination ~40m east
-      destination = L.latLng(startLatLng.lat, startLatLng.lng + 0.0005);
+      // Destination ~15m east
+      destination = L.latLng(startLatLng.lat, startLatLng.lng + 0.00015);
       L.marker(destination).addTo(map).bindPopup('Destination');
       routeControl = L.Routing.control({
         waypoints: [startLatLng, destination],
