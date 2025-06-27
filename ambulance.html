@@ -4,15 +4,31 @@
   <title>Ambulance Tracker (Rider)</title>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css" />
+  <style>
+    #map { height: 60vh; width: 100%; margin-bottom: 10px; }
+    .leaflet-routing-container { display: none; }
+    .route-label {
+      background: rgba(0,0,0,0.8);
+      color: white;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-family: sans-serif;
+      pointer-events: none;
+    }
+  </style>
 </head>
 <body>
   <h2>Ambulance Tracker (Pushing Location to Firebase)</h2>
-  <button id="startTripBtn">Start Trip</button>
+  <div id="map"></div>
+  <button id="startTripBtn" disabled>Start Trip</button>
+  <button id="stopTripBtn" style="display:none;">Stop Trip</button>
 
-  <!-- Firebase SDK -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-app.js";
-    import { getDatabase, ref, set } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-database.js";
+    import { getDatabase, ref, set, onValue, update, remove } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyCBjUKOnq3mR8wVlqVGWRHnjXkf_nUY1mY",
@@ -28,31 +44,157 @@
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
 
-    // Start Trip Button
-    document.getElementById("startTripBtn").addEventListener("click", () => {
-      set(ref(db, "ambulance/tripStarted"), true);
-      alert("Trip started. Viewer will now show the route.");
+    let map, routeControl, fullRoute, coveredLine, uncoveredLine, ambulanceMarker;
+    let routeCoords = [], coveredCoords = [];
+    let tripStarted = false;
+    let destination = null;
+    let watchId = null;
+    let lastLatLng = null;
+
+    function enableStartBtn() {
+      document.getElementById('startTripBtn').disabled = false;
+    }
+    function disableStartBtn() {
+      document.getElementById('startTripBtn').disabled = true;
+    }
+    function showStopBtn() {
+      document.getElementById('stopTripBtn').style.display = '';
+    }
+    function hideStopBtn() {
+      document.getElementById('stopTripBtn').style.display = 'none';
+    }
+
+    function drawRouteLines() {
+      if (uncoveredLine) { map.removeLayer(uncoveredLine); uncoveredLine = null; }
+      if (coveredLine) { map.removeLayer(coveredLine); coveredLine = null; }
+      if (coveredCoords.length > 1) {
+        coveredLine = L.polyline(coveredCoords, { color: 'gray', weight: 6 }).addTo(map);
+      }
+      if (routeCoords.length > 1) {
+        // Uncovered = routeCoords from last covered to end
+        let lastCoveredIdx = 0;
+        if (coveredCoords.length > 0) {
+          // Find the closest point in routeCoords to last covered
+          let last = coveredCoords[coveredCoords.length-1];
+          let minDist = Infinity, minIdx = 0;
+          routeCoords.forEach((pt, idx) => {
+            let d = Math.abs(pt.lat - last.lat) + Math.abs(pt.lng - last.lng);
+            if (d < minDist) { minDist = d; minIdx = idx; }
+          });
+          lastCoveredIdx = minIdx;
+        }
+        let remaining = routeCoords.slice(lastCoveredIdx);
+        if (remaining.length > 1) {
+          uncoveredLine = L.polyline(remaining, { color: '#2196f3', weight: 6 }).addTo(map);
+        }
+      }
+    }
+
+    function saveRouteToFirebase() {
+      set(ref(db, 'ambulance/route'), routeCoords.map(pt => ({lat: pt.lat, lng: pt.lng})));
+    }
+    function saveCoveredPathToFirebase() {
+      set(ref(db, 'ambulance/coveredPath'), coveredCoords.map(pt => ({lat: pt.lat, lng: pt.lng})));
+    }
+
+    function startTrip() {
+      tripStarted = true;
+      set(ref(db, 'ambulance/tripStarted'), true);
+      showStopBtn();
+      disableStartBtn();
+    }
+    function stopTrip() {
+      tripStarted = false;
+      set(ref(db, 'ambulance/tripStarted'), false);
+      remove(ref(db, 'ambulance/coveredPath'));
+      coveredCoords = [];
+      drawRouteLines();
+      hideStopBtn();
+      enableStartBtn();
+    }
+
+    function onPositionUpdate(pos) {
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      const heading = pos.coords.heading || 0;
+      const latlng = L.latLng(lat, lng);
+      set(ref(db, 'ambulance/location'), {
+        latitude: lat,
+        longitude: lng,
+        heading: heading,
+        timestamp: Date.now()
+      });
+      if (!ambulanceMarker) {
+        ambulanceMarker = L.marker(latlng).addTo(map).bindPopup('Ambulance');
+      } else {
+        ambulanceMarker.setLatLng(latlng);
+      }
+      if (tripStarted) {
+        if (!lastLatLng || latlng.distanceTo(lastLatLng) > 5) {
+          coveredCoords.push(latlng);
+          saveCoveredPathToFirebase();
+          drawRouteLines();
+          lastLatLng = latlng;
+        }
+      }
+    }
+
+    function setupMapAndRoute(startLatLng) {
+      map = L.map('map').setView(startLatLng, 18);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+      // Destination ~40m east
+      destination = L.latLng(startLatLng.lat, startLatLng.lng + 0.0005);
+      L.marker(destination).addTo(map).bindPopup('Destination');
+      routeControl = L.Routing.control({
+        waypoints: [startLatLng, destination],
+        addWaypoints: false,
+        draggableWaypoints: false,
+        routeWhileDragging: false,
+        showAlternatives: false,
+        createMarker: () => null,
+        lineOptions: { styles: [{ color: '#2196f3', weight: 6 }] }
+      }).on('routesfound', function(e) {
+        routeCoords = e.routes[0].coordinates;
+        drawRouteLines();
+        saveRouteToFirebase();
+        enableStartBtn();
+      }).addTo(map);
+    }
+
+    document.getElementById('startTripBtn').addEventListener('click', () => {
+      startTrip();
+    });
+    document.getElementById('stopTripBtn').addEventListener('click', () => {
+      stopTrip();
     });
 
-    // Watch GPS and push to Firebase
-    navigator.geolocation.watchPosition(
+    // On load: get current location, setup map and route
+    navigator.geolocation.getCurrentPosition(
       (pos) => {
         const lat = pos.coords.latitude;
         const lng = pos.coords.longitude;
-        const heading = pos.coords.heading || 0;
-
-        set(ref(db, "ambulance/location"), {
-          latitude: lat,
-          longitude: lng,
-          heading: heading,
-          timestamp: Date.now()
-        });
-
-        console.log("Location updated:", lat, lng);
+        setupMapAndRoute(L.latLng(lat, lng));
+        // Start watching position
+        watchId = navigator.geolocation.watchPosition(
+          onPositionUpdate,
+          (err) => alert('Location error: ' + err.message),
+          { enableHighAccuracy: true, maximumAge: 500 }
+        );
       },
-      (err) => alert("Location error: " + err.message),
-      { enableHighAccuracy: true, maximumAge: 500 }
+      (err) => alert('Location error: ' + err.message),
+      { enableHighAccuracy: true }
     );
+
+    // Listen for trip stop from other clients (sync UI)
+    onValue(ref(db, 'ambulance/tripStarted'), (snap) => {
+      if (!snap.val()) {
+        tripStarted = false;
+        hideStopBtn();
+        enableStartBtn();
+      }
+    });
   </script>
+  <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.min.js"></script>
 </body>
 </html>
