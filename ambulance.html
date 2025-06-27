@@ -1,55 +1,102 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Ambulance Tracker (Rider)</title>
+  <title>Ambulance Navigation</title>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css" />
   <style>
-    #map { height: 60vh; width: 100%; margin-bottom: 10px; }
-    .leaflet-routing-container { display: none; }
-    .direction-arrow {
-      width: 40px;
-      height: 40px;
-      transform: rotate(0deg);
-      transition: transform 0.2s linear;
-    }
-    .info-box {
+    html, body { height: 100%; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', Arial, sans-serif; background: #f5f5f5; }
+    #map { height: 100vh; width: 100vw; }
+    .floating-card {
+      position: absolute;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
       background: #fff;
-      border-radius: 8px;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
-      padding: 10px 15px;
-      font-family: sans-serif;
-      margin-bottom: 10px;
-      display: inline-block;
+      border-radius: 16px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+      padding: 18px 28px;
+      z-index: 1001;
+      min-width: 260px;
+      text-align: center;
+      font-size: 18px;
+      color: #222;
+      display: flex;
+      gap: 24px;
+      justify-content: center;
+      align-items: center;
     }
-    .btn {
-      padding: 8px 16px;
-      border: none;
-      border-radius: 5px;
+    .fab {
+      position: absolute;
+      bottom: 32px;
+      right: 32px;
       background: #1976d2;
       color: #fff;
-      font-size: 16px;
-      margin-right: 8px;
+      border: none;
+      border-radius: 50%;
+      width: 64px;
+      height: 64px;
+      font-size: 28px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.18);
       cursor: pointer;
+      z-index: 1002;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s;
     }
-    .btn:disabled {
-      background: #aaa;
-      cursor: not-allowed;
+    .fab:active { background: #1251a3; }
+    .fab[disabled] { background: #aaa; cursor: not-allowed; }
+    .set-dest-btn {
+      position: absolute;
+      top: 90px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1002;
+      background: #fff;
+      color: #1976d2;
+      border: 2px solid #1976d2;
+      border-radius: 24px;
+      padding: 10px 28px;
+      font-size: 18px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.10);
+      transition: background 0.2s, color 0.2s;
+    }
+    .set-dest-btn:active { background: #1976d2; color: #fff; }
+    .leaflet-routing-container { display: none; }
+    .direction-arrow {
+      width: 48px;
+      height: 48px;
+      transform: rotate(0deg);
+      transition: transform 0.2s linear;
+      filter: drop-shadow(0 2px 4px rgba(0,0,0,0.18));
+    }
+    .dest-pin {
+      width: 36px;
+      height: 36px;
+      filter: drop-shadow(0 2px 4px rgba(0,0,0,0.18));
+    }
+    @media (max-width: 600px) {
+      .floating-card { font-size: 15px; min-width: 180px; padding: 10px 8px; }
+      .fab { width: 48px; height: 48px; font-size: 20px; bottom: 16px; right: 16px; }
+      .set-dest-btn { font-size: 15px; padding: 8px 12px; top: 70px; }
     }
   </style>
 </head>
 <body>
-  <h2>Ambulance Tracker (Pushing Location to Firebase)</h2>
-  <div class="info-box" id="tripInfo" style="display:none;">
+  <div class="floating-card" id="tripInfo" style="display:none;">
     <div><b>ETA:</b> <span id="eta">--</span></div>
-    <div><b>Total Distance:</b> <span id="totalDistance">--</span></div>
-    <div><b>Distance Left:</b> <span id="distanceLeft">--</span></div>
+    <div><b>Left:</b> <span id="distanceLeft">--</span></div>
+    <div><b>Total:</b> <span id="totalDistance">--</span></div>
   </div>
-  <button class="btn" id="setDestBtn">Set Destination</button>
-  <button class="btn" id="startTripBtn" disabled>Start Trip</button>
-  <button class="btn" id="stopTripBtn" style="display:none;">Stop Trip</button>
+  <button class="set-dest-btn" id="setDestBtn">Set Destination</button>
+  <button class="fab" id="startTripBtn" title="Start Trip" disabled>▶</button>
+  <button class="fab" id="stopTripBtn" title="Stop Trip" style="display:none;background:#d32f2f;">■</button>
   <div id="map"></div>
 
   <script type="module">
@@ -95,20 +142,33 @@
     function hideStopBtn() { stopTripBtn.style.display = 'none'; }
     function showTripInfo() { tripInfo.style.display = ''; }
     function hideTripInfo() { tripInfo.style.display = 'none'; }
+    function showStartBtn() { startTripBtn.style.display = ''; }
+    function hideStartBtn() { startTripBtn.style.display = 'none'; }
 
     function getDirectionIcon(bearing) {
       return L.divIcon({
         className: '',
-        html: `<svg class="direction-arrow" style="transform: rotate(${bearing}deg);" viewBox="0 0 40 40">
-          <polygon points="20,4 36,36 20,30 4,36" fill="#1976d2" stroke="#222" stroke-width="2"/>
+        html: `<svg class="direction-arrow" style="transform: rotate(${bearing}deg);" viewBox="0 0 48 48">
+          <polygon points="24,6 44,44 24,36 4,44" fill="#1976d2" stroke="#fff" stroke-width="2"/>
         </svg>`,
-        iconSize: [40, 40],
-        iconAnchor: [20, 20]
+        iconSize: [48, 48],
+        iconAnchor: [24, 24]
+      });
+    }
+    function getDestPinIcon() {
+      return L.divIcon({
+        className: '',
+        html: `<svg class="dest-pin" viewBox="0 0 36 36">
+          <ellipse cx="18" cy="28" rx="8" ry="4" fill="#1976d2" opacity="0.2"/>
+          <circle cx="18" cy="16" r="10" fill="#fff" stroke="#1976d2" stroke-width="3"/>
+          <circle cx="18" cy="16" r="5" fill="#1976d2"/>
+        </svg>`,
+        iconSize: [36, 36],
+        iconAnchor: [18, 32]
       });
     }
 
     function computeBearing(from, to) {
-      // Returns bearing in degrees from 'from' to 'to'
       const lat1 = from.lat * Math.PI / 180;
       const lat2 = to.lat * Math.PI / 180;
       const dLon = (to.lng - from.lng) * Math.PI / 180;
@@ -120,7 +180,6 @@
     }
 
     function updateAmbulanceMarker(latlng) {
-      // Find next point on route for bearing
       let bearing = lastHeading;
       if (routeCoords.length > 1) {
         let minDist = Infinity, nextIdx = 1;
@@ -136,18 +195,18 @@
         ambulanceMarker.setLatLng(latlng);
         ambulanceMarker.setIcon(getDirectionIcon(bearing));
       }
+      // Animate map to follow
+      map.panTo(latlng, { animate: true, duration: 0.5 });
     }
 
     function drawRouteLines() {
       if (uncoveredLine) { map.removeLayer(uncoveredLine); uncoveredLine = null; }
       if (coveredLine) { map.removeLayer(coveredLine); coveredLine = null; }
-      // Always show full route (blue)
       if (routeCoords.length > 1) {
-        uncoveredLine = L.polyline(routeCoords, { color: '#2196f3', weight: 6 }).addTo(map);
+        uncoveredLine = L.polyline(routeCoords, { color: '#1976d2', weight: 8, opacity: 0.95 }).addTo(map);
       }
-      // Show covered path (gray) overlay
       if (coveredCoords.length > 1) {
-        coveredLine = L.polyline(coveredCoords, { color: 'gray', weight: 8 }).addTo(map);
+        coveredLine = L.polyline(coveredCoords, { color: '#888', weight: 10, opacity: 0.7 }).addTo(map);
       }
     }
 
@@ -171,7 +230,6 @@
       showStopBtn();
       hideStartBtn();
       showTripInfo();
-      // Start watching position
       if (!watchId) {
         watchId = navigator.geolocation.watchPosition(
           onPositionUpdate,
@@ -196,8 +254,6 @@
         watchId = null;
       }
     }
-    function showStartBtn() { startTripBtn.style.display = ''; }
-    function hideStartBtn() { startTripBtn.style.display = 'none'; }
 
     function haversine(lat1, lon1, lat2, lon2) {
       const toRad = deg => deg * Math.PI / 180;
@@ -217,7 +273,6 @@
     }
 
     function getDistanceLeft(current, route) {
-      // Find closest point on route, sum remaining
       let minDist = Infinity, idx = 0;
       for (let i = 0; i < route.length; i++) {
         let d = current.distanceTo(route[i]);
@@ -231,7 +286,6 @@
     }
 
     function estimateETA(distanceLeft) {
-      // Use average speed in m/s, fallback to 1.5 m/s (walking)
       let avgSpeed = 0;
       if (speedHistory.length > 2) {
         avgSpeed = speedHistory.reduce((a, b) => a + b, 0) / speedHistory.length;
@@ -253,12 +307,11 @@
       lastHeading = heading;
       const latlng = L.latLng(lat, lng);
 
-      // Speed calculation
       if (lastLatLng && pos.timestamp && lastLatLng.timestamp) {
         const dt = (pos.timestamp - lastLatLng.timestamp) / 1000;
         const dist = lastLatLng.latlng.distanceTo(latlng);
         const speed = dist / dt;
-        if (speed > 0.5 && speed < 30) { // 0.5 m/s to 30 m/s
+        if (speed > 0.5 && speed < 30) {
           speedHistory.push(speed);
           if (speedHistory.length > 10) speedHistory.shift();
         }
@@ -279,7 +332,6 @@
           saveCoveredPathToFirebase();
           drawRouteLines();
         }
-        // Update trip stats
         const leftDist = getDistanceLeft(latlng, routeCoords);
         const eta = estimateETA(leftDist);
         updateTripStatsUI(eta, totalDistance, leftDist);
@@ -293,7 +345,7 @@
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
 
       if (destMarker) map.removeLayer(destMarker);
-      destMarker = L.marker(destLatLng).addTo(map).bindPopup('Destination');
+      destMarker = L.marker(destLatLng, { icon: getDestPinIcon() }).addTo(map).bindPopup('Destination');
 
       routeControl = L.Routing.control({
         waypoints: [sourceLatLng, destLatLng],
@@ -302,7 +354,7 @@
         routeWhileDragging: false,
         showAlternatives: false,
         createMarker: () => null,
-        lineOptions: { styles: [{ color: '#2196f3', weight: 6 }] }
+        lineOptions: { styles: [{ color: '#1976d2', weight: 8, opacity: 0.95 }] }
       }).on('routesfound', function(e) {
         routeCoords = e.routes[0].coordinates.map(c => L.latLng(c.lat, c.lng));
         totalDistance = getRouteDistance(routeCoords);
@@ -314,7 +366,6 @@
         saveTripStatsToFirebase("--", totalDistance, totalDistance);
       }).addTo(map);
 
-      // Show ambulance marker at source
       updateAmbulanceMarker(sourceLatLng);
     }
 
@@ -353,7 +404,6 @@
     remove(ref(db, 'ambulance/location'));
     update(ref(db, 'ambulance'), { eta: null, totalDistance: null, distanceLeft: null });
 
-    // Listen for trip stop from other clients (sync UI)
     onValue(ref(db, 'ambulance/tripStarted'), (snap) => {
       if (!snap.val()) {
         tripStarted = false;
