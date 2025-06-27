@@ -7,6 +7,7 @@
 </head>
 <body>
   <h2>Ambulance Tracker (Pushing Location to Firebase)</h2>
+  <button id="startTripBtn">Start Trip</button>
 
   <!-- Firebase SDK -->
   <script type="module">
@@ -26,6 +27,12 @@
 
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
+
+    // Start Trip Button
+    document.getElementById("startTripBtn").addEventListener("click", () => {
+      set(ref(db, "ambulance/tripStarted"), true);
+      alert("Trip started. Viewer will now show the route.");
+    });
 
     // Watch GPS and push to Firebase
     navigator.geolocation.watchPosition(
